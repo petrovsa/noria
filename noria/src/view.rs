@@ -5,6 +5,7 @@ use crate::{ExclusiveConnection, SharedConnection};
 use petgraph::graph::NodeIndex;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use tokio::prelude::*;
 use std::io;
 use std::net::SocketAddr;
 use std::rc::Rc;
@@ -147,6 +148,8 @@ pub struct View<E = SharedConnection> {
 
     #[allow(dead_code)]
     exclusivity: E,
+
+    runtime: tokio::runtime::current_thread::Runtime;
 }
 
 impl Clone for View<SharedConnection> {
