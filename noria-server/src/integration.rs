@@ -1,6 +1,7 @@
 use crate::controller::recipe::Recipe;
 use crate::controller::sql::SqlIncorporator;
 use crate::controller::{ControllerBuilder, LocalControllerHandle};
+use common::DataType::Int;
 use dataflow::node::special::Base;
 use dataflow::ops::grouped::aggregate::Aggregation;
 use dataflow::ops::identity::Identity;
@@ -2294,7 +2295,7 @@ fn remove_query() {
 }
 
 #[test]
-fn reader_replica_writes() {
+fn reader_replica_basic() {
     let txt = "CREATE TABLE x (a int);\n
                QUERY q: SELECT a from x;\n";
 
@@ -2327,4 +2328,114 @@ fn reader_replica_writes() {
     assert_eq!(q1.lookup(&[0.into()], true).unwrap().len(), 3);
     assert_eq!(q2.lookup(&[0.into()], true).unwrap().len(), 3);
     assert_eq!(q3.lookup(&[0.into()], true).unwrap().len(), 3);
+}
+
+#[test]
+fn reader_replica_kill_worker_writes() {
+    let txt = "CREATE TABLE x (a int);\n
+               QUERY q: SELECT COUNT(*) from x;\n";
+
+    // Start Noria with three separate workers
+    let mut g = ControllerBuilder::default().build_local().unwrap();
+    g.install_recipe(txt).unwrap();
+    assert_eq!(g.inputs().unwrap().len(), 1);
+    assert_eq!(g.outputs().unwrap().len(), DEFAULT_REPLICAS);
+    assert!(DEFAULT_REPLICAS > 1);
+
+    let mut mutx = g.table("x").unwrap();
+    let mut q1 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut q2 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut q0 = g.view("q").unwrap().into_exclusive().unwrap();
+
+    // These views should all be on different workers
+    // assert_eq!(q0.reader_index(), 0);
+    // assert_eq!(q1.reader_index(), 1);
+    // assert_eq!(q2.reader_index(), 2);
+    // q1 -> w1
+    // q2 -> w2
+    // q0 -> w0
+
+    // Write to normal instance
+    mutx.insert(vec![100.into()]).unwrap();
+    sleep();
+    assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
+
+    // // Write after killing a replica-only worker
+    // g.kill_worker(w2);
+    // sleep();
+    // mutx.insert(vec![200.into()]).unwrap();
+    // sleep();
+    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
+
+    // // Write after killing the worker with the query node (no error)
+    // g.kill_worker(w0);
+    // sleep();
+    // mutx.insert(vec![300.into()]).unwrap();
+    // sleep();
+}
+
+#[test]
+fn reader_replica_kill_worker_reads() {
+    let txt = "CREATE TABLE x (a int);\n
+               QUERY q: SELECT COUNT(*) from x;\n";
+
+    // Start Noria with three separate workers
+    let mut g = ControllerBuilder::default().build_local().unwrap();
+    g.install_recipe(txt).unwrap();
+    assert_eq!(g.inputs().unwrap().len(), 1);
+    assert_eq!(g.outputs().unwrap().len(), DEFAULT_REPLICAS);
+    assert!(DEFAULT_REPLICAS > 1);
+
+    let mut mutx = g.table("x").unwrap();
+    let mut q1 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut q2 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut q0 = g.view("q").unwrap().into_exclusive().unwrap();
+
+    // These views should all be on different workers
+    // assert_eq!(q0.reader_index(), 0);
+    // assert_eq!(q1.reader_index(), 1);
+    // assert_eq!(q2.reader_index(), 2);
+    // q1 -> w1
+    // q2 -> w2
+    // q0 -> w0
+
+    // Write to normal instance
+    mutx.insert(vec![100.into()]).unwrap();
+    sleep();
+    assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
+    assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
+    assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
+
+    // // Kill a replica-only worker
+    // g.kill_worker(w2);
+    // sleep();
+    // mutx.insert(vec![200.into()]).unwrap();
+    // sleep();
+
+    // // Only the view on THAT worker will establish a new connection, and the new
+    // // connection will be on one of the two remaining workers.
+    // assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
+    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
+    // assert!(q2.lookup(&[0.into()], true), Err(NEW_CONNECTION));
+    // assert_eq!(q2.reader_index(), 1);  // not 2
+    // assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
+
+    // // Kill the worker with the query node.
+    // g.kill_worker(w0);
+    // sleep();
+    // mutx.insert(vec![300.into()]).unwrap();
+    // sleep();
+
+    // // All views need to establish a new connection since the graph had to be rebuilt
+    // assert!(q0.lookup(&[0.into()], true), Err(NEW_CONNECTION));
+    // assert!(q1.lookup(&[0.into()], true), Err(NEW_CONNECTION));
+    // assert!(q2.lookup(&[0.into()], true), Err(NEW_CONNECTION));
+    // assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
+    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
+    // assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
+
+    // // New connections were established in round robin order
+    // assert_eq!(q0.reader_index(), 2);
+    // assert_eq!(q1.reader_index(), 1);
+    // assert_eq!(q2.reader_index(), 0);
 }
