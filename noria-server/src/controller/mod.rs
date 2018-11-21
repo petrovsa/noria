@@ -44,7 +44,6 @@ use streamunordered::{StreamUnordered, StreamYield};
 use tokio;
 use tokio::prelude::future::{poll_fn, Either};
 use tokio::prelude::*;
-use tokio_io_pool;
 use tokio_threadpool::blocking;
 
 #[cfg(test)]
@@ -201,14 +200,6 @@ fn start_instance<A: Authority + 'static>(
         rt.core_threads(threads);
     }
     let mut rt = rt.build().unwrap();
-
-    let mut pool = tokio_io_pool::Builder::default();
-    pool.name_prefix("io-worker-");
-    if let Some(threads) = config.threads {
-        pool.pool_size(threads);
-    }
-    let iopool = pool.build().unwrap();
-    let ioh = iopool.handle().clone();
 
     let (trigger, valve) = Valve::new();
     let (tx, rx) = futures::sync::mpsc::unbounded();
@@ -385,7 +376,6 @@ fn start_instance<A: Authority + 'static>(
                             let (rep_tx, rep_rx) = futures::sync::mpsc::unbounded();
                             let ctrl = listen_df(
                                 valve,
-                                &ioh,
                                 log.clone(),
                                 (memory_limit, memory_check_frequency),
                                 &state,
@@ -532,9 +522,7 @@ fn start_instance<A: Authority + 'static>(
         );
     }
 
-    Ok(LocalControllerHandle::new(
-        authority, tx, trigger, rt, iopool,
-    ))
+    Ok(LocalControllerHandle::new(authority, tx, trigger, rt))
 }
 
 /*
@@ -561,26 +549,25 @@ impl InstanceState {
 
 fn listen_reads(
     valve: &Valve,
-    ioh: &tokio_io_pool::Handle,
     on: tokio::net::TcpListener,
     readers: Readers,
 ) -> impl Future<Item = (), Error = ()> {
-    ioh.spawn_all(
-        valve
-            .wrap(on.incoming())
-            .map(Some)
-            .or_else(|_| {
-                // io error from client: just ignore it
-                Ok(None)
-            })
-            .filter_map(|c| c)
-            .map(move |stream| {
-                use tokio::prelude::AsyncRead;
+    valve
+        .wrap(on.incoming())
+        .map(Some)
+        .or_else(|_| {
+            // io error from client: just ignore it
+            Ok(None)
+        })
+        .filter_map(|c| c)
+        .for_each(move |stream| {
+            use tokio::prelude::AsyncRead;
 
-                let mut readers = readers.clone();
-                let (r, w) = stream.split();
-                let w = AsyncBincodeWriter::from(w);
-                let r = AsyncBincodeReader::from(r);
+            let mut readers = readers.clone();
+            let (r, w) = stream.split();
+            let w = AsyncBincodeWriter::from(w);
+            let r = AsyncBincodeReader::from(r);
+            tokio::spawn(
                 r.and_then(move |req| readers::handle_message(req, &mut readers))
                     .map_err(|_| -> () {
                         eprintln!("!!! reader client protocol error");
@@ -589,20 +576,13 @@ fn listen_reads(
                     .then(|_| {
                         // we're probably just shutting down
                         Ok(())
-                    })
-            }),
-    )
-    .map_err(|e: tokio_io_pool::StreamSpawnError<()>| {
-        eprintln!(
-            "io pool is shutting down, so can't handle more reads: {:?}",
-            e
-        );
-    })
+                    }),
+            )
+        })
 }
 
 fn listen_df(
     valve: Valve,
-    ioh: &tokio_io_pool::Handle,
     log: slog::Logger,
     (memory_limit, evict_every): (Option<usize>, Option<Duration>),
     state: &ControllerState,
@@ -657,7 +637,7 @@ fn listen_df(
     );
 
     // also start readers
-    tokio::spawn(listen_reads(&valve, ioh, rport, readers.clone()));
+    tokio::spawn(listen_reads(&valve, rport, readers.clone()));
 
     // and tell the controller about us
     let timer = valve.wrap(tokio::timer::Interval::new(
