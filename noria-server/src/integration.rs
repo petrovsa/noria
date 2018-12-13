@@ -47,6 +47,23 @@ pub fn build_local_logging(prefix: &str) -> LocalControllerHandle<LocalAuthority
     build(prefix, DEFAULT_SHARDING, DEFAULT_REPLICAS, true)
 }
 
+// Builds a controller under the given authority.
+fn build_authority(
+    prefix: &str,
+    authority: Arc<LocalAuthority>,
+    log: bool,
+) -> LocalControllerHandle<LocalAuthority> {
+    use crate::logger_pls;
+    let mut builder = ControllerBuilder::default();
+    if log {
+        builder.log_with(logger_pls());
+    }
+    builder.set_sharding(DEFAULT_SHARDING);
+    builder.set_persistence(get_persistence_params(prefix));
+    builder.set_replication_factor(DEFAULT_REPLICAS);
+    builder.build(authority).unwrap()
+}
+
 fn build(
     prefix: &str,
     sharding: Option<usize>,
@@ -2336,21 +2353,26 @@ fn reader_replica_kill_worker_writes() {
                QUERY q: SELECT COUNT(*) from x;\n";
 
     // Start Noria with three separate workers
-    let mut g = ControllerBuilder::default().build_local().unwrap();
-    g.install_recipe(txt).unwrap();
-    assert_eq!(g.inputs().unwrap().len(), 1);
-    assert_eq!(g.outputs().unwrap().len(), DEFAULT_REPLICAS);
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g0 = build_authority("worker-0", authority.clone(), false);
+    let mut g1 = build_authority("worker-1", authority.clone(), false);
+    let mut g2 = build_authority("worker-2", authority.clone(), false);
+    sleep();
+
+    g0.install_recipe(txt).unwrap();
+    assert_eq!(g0.inputs().unwrap().len(), 1);
+    assert_eq!(g0.outputs().unwrap().len(), DEFAULT_REPLICAS);
     assert!(DEFAULT_REPLICAS > 1);
 
-    let mut mutx = g.table("x").unwrap();
-    let mut q1 = g.view("q").unwrap().into_exclusive().unwrap();
-    let mut q2 = g.view("q").unwrap().into_exclusive().unwrap();
-    let mut q0 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut mutx = g0.table("x").unwrap();
+    let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
+    let q2 = g0.view("q").unwrap().into_exclusive().unwrap();
+    let q0 = g0.view("q").unwrap().into_exclusive().unwrap();
 
     // These views should all be on different workers
-    // assert_eq!(q0.reader_index(), 0);
-    // assert_eq!(q1.reader_index(), 1);
-    // assert_eq!(q2.reader_index(), 2);
+    assert_eq!(q0.reader_index(), 0);
+    assert_eq!(q1.reader_index(), 1);
+    assert_eq!(q2.reader_index(), 2);
     // q1 -> w1
     // q2 -> w2
     // q0 -> w0
@@ -2361,17 +2383,18 @@ fn reader_replica_kill_worker_writes() {
     assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
 
     // // Write after killing a replica-only worker
-    // g.kill_worker(w2);
-    // sleep();
+    g2.shutdown_now();
     // mutx.insert(vec![200.into()]).unwrap();
     // sleep();
     // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
 
     // // Write after killing the worker with the query node (no error)
-    // g.kill_worker(w0);
-    // sleep();
+    g0.shutdown_now();
     // mutx.insert(vec![300.into()]).unwrap();
     // sleep();
+
+    // Kill the last worker
+    g1.shutdown_now();
 }
 
 #[test]
@@ -2380,21 +2403,26 @@ fn reader_replica_kill_worker_reads() {
                QUERY q: SELECT COUNT(*) from x;\n";
 
     // Start Noria with three separate workers
-    let mut g = ControllerBuilder::default().build_local().unwrap();
-    g.install_recipe(txt).unwrap();
-    assert_eq!(g.inputs().unwrap().len(), 1);
-    assert_eq!(g.outputs().unwrap().len(), DEFAULT_REPLICAS);
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g0 = build_authority("worker-0", authority.clone(), false);
+    let mut g1 = build_authority("worker-1", authority.clone(), false);
+    let mut g2 = build_authority("worker-2", authority.clone(), false);
+    sleep();
+
+    g0.install_recipe(txt).unwrap();
+    assert_eq!(g0.inputs().unwrap().len(), 1);
+    assert_eq!(g0.outputs().unwrap().len(), DEFAULT_REPLICAS);
     assert!(DEFAULT_REPLICAS > 1);
 
-    let mut mutx = g.table("x").unwrap();
-    let mut q1 = g.view("q").unwrap().into_exclusive().unwrap();
-    let mut q2 = g.view("q").unwrap().into_exclusive().unwrap();
-    let mut q0 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut mutx = g0.table("x").unwrap();
+    let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
+    let mut q2 = g0.view("q").unwrap().into_exclusive().unwrap();
+    let mut q0 = g0.view("q").unwrap().into_exclusive().unwrap();
 
     // These views should all be on different workers
-    // assert_eq!(q0.reader_index(), 0);
-    // assert_eq!(q1.reader_index(), 1);
-    // assert_eq!(q2.reader_index(), 2);
+    assert_eq!(q0.reader_index(), 0);
+    assert_eq!(q1.reader_index(), 1);
+    assert_eq!(q2.reader_index(), 2);
     // q1 -> w1
     // q2 -> w2
     // q0 -> w0
@@ -2407,7 +2435,7 @@ fn reader_replica_kill_worker_reads() {
     assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
 
     // // Kill a replica-only worker
-    // g.kill_worker(w2);
+    g2.shutdown_now();
     // sleep();
     // mutx.insert(vec![200.into()]).unwrap();
     // sleep();
@@ -2421,7 +2449,7 @@ fn reader_replica_kill_worker_reads() {
     // assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
 
     // // Kill the worker with the query node.
-    // g.kill_worker(w0);
+    g0.shutdown_now();
     // sleep();
     // mutx.insert(vec![300.into()]).unwrap();
     // sleep();
@@ -2438,4 +2466,7 @@ fn reader_replica_kill_worker_reads() {
     // assert_eq!(q0.reader_index(), 2);
     // assert_eq!(q1.reader_index(), 1);
     // assert_eq!(q2.reader_index(), 0);
+
+    // // Kill the last worker
+    g1.shutdown_now()
 }

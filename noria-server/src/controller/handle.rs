@@ -144,6 +144,16 @@ impl<A: Authority> LocalControllerHandle<A> {
         }
     }
 
+    /// Signals the local instance to exit immediately, and wait for that to happen
+    pub fn shutdown_now(&mut self) {
+        if let Some(rt) = self.runtime.take() {
+            drop(self.c.take());
+            drop(self.event_tx.take());
+            drop(self.kill.take());
+            rt.shutdown_now().wait().unwrap();
+        }
+    }
+
     /// Wait for associated local instance to exit (presumably with an error).
     pub fn wait(mut self) {
         drop(self.event_tx.take());
