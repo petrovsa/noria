@@ -356,11 +356,13 @@ impl<'a> Migration<'a> {
             uninformed_domain_nodes: &mut HashMap<DomainIndex, Vec<(NodeIndex, bool)>>,
             changed_domains: &Vec<DomainIndex>) {
         // TODO(malte): simple round-robin placement for the moment
-        let mut wis = mainline.workers
+        let mut wis_sorted = mainline.workers
             .keys()
             .map(|wi| wi.clone())
-            .collect::<Vec<WorkerIdentifier>>()
-            .into_iter();
+            .collect::<Vec<WorkerIdentifier>>();
+        // Sort the worker identifiers so domain-worker assignment is deterministic
+        wis_sorted.sort_by(|wia, wib| wia.to_string().cmp(&wib.to_string()));
+        let mut wis = wis_sorted.into_iter();
         for domain in changed_domains {
             if mainline.domains.contains_key(&domain) {
                 // this is not a new domain
@@ -379,11 +381,12 @@ impl<'a> Migration<'a> {
                             break wi;
                         }
                     } else {
-                        wis = mainline.workers
+                        wis_sorted = mainline.workers
                             .keys()
                             .map(|wi| wi.clone())
-                            .collect::<Vec<WorkerIdentifier>>()
-                            .into_iter();
+                            .collect::<Vec<WorkerIdentifier>>();
+                        wis_sorted.sort_by(|wia, wib| wia.to_string().cmp(&wib.to_string()));
+                        wis = wis_sorted.into_iter();
                     }
                 };
                 identifiers.push(wi);
