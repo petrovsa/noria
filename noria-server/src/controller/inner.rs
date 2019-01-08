@@ -2,6 +2,8 @@ use crate::controller::migrate::materialization::Materializations;
 use crate::controller::{
     ControllerState, DomainHandle, DomainShardHandle, Migration, Recipe, Worker, WorkerIdentifier,
 };
+use crate::controller::recipe::Schema;
+use crate::controller::schema;
 use crate::coordination::{CoordinationMessage, CoordinationPayload, DomainDescriptor};
 use dataflow::payload::ControlReplyPacket;
 use dataflow::prelude::*;
@@ -13,6 +15,7 @@ use noria::channel::tcp::{SendError, TcpSender};
 use noria::consensus::{Authority, Epoch, STATE_KEY};
 use noria::debug::stats::{DomainStats, GraphStats, NodeStats};
 use noria::ActivationResult;
+use nom_sql::ColumnSpecification;
 use petgraph;
 use petgraph::visit::Bfs;
 use slog;
@@ -238,6 +241,10 @@ impl ControllerInner {
                             let n = &self.ingredients[ni];
                             if n.is_internal() {
                                 Some((ni, n.name(), n.description(true)))
+                            } else if n.is_base() {
+                                Some((ni, n.name(), "Base table".to_owned()))
+                            } else if n.is_reader() {
+                                Some((ni, n.name(), "Leaf view".to_owned()))
                             } else {
                                 None
                             }
@@ -744,9 +751,9 @@ impl ControllerInner {
         };
 
         self.ingredients[node].next_reader().map(|ni| {
-            let name = self.ingredients[ni].name().to_string();
             let domain = self.ingredients[ni].domain();
             let columns = self.ingredients[ni].fields().to_vec();
+            let schema = self.view_schema(ni);
             let shards = (0..self.domains[&domain].shards())
                 .map(|i| self.read_addrs[&self.domains[&domain].assignment(i)].clone())
                 .collect();
@@ -764,9 +771,24 @@ impl ControllerInner {
                 local_ports: vec![],
                 node: ni,
                 columns,
+                schema: schema,
                 shards,
             }
         })
+    }
+
+    fn view_schema(&self, view_ni: NodeIndex) -> Option<Vec<ColumnSpecification>> {
+        let n = &self.ingredients[view_ni];
+        let schema: Vec<_> = (0..n.fields().len())
+            .into_iter()
+            .map(|i| schema::column_schema(&self.ingredients, view_ni, &self.recipe, i, &self.log))
+            .collect();
+
+        if schema.iter().any(|cs| cs.is_none()) {
+            None
+        } else {
+            Some(schema.into_iter().map(|cs| cs.unwrap()).collect())
+        }
     }
 
     /// Obtain a TableBuild that can be used to construct a Table to perform writes and deletes
@@ -816,7 +838,10 @@ impl ControllerInner {
             columns.len(),
             node.fields().len() - base_operator.get_dropped().len()
         );
-        let schema = self.recipe.get_base_schema(base);
+        let schema = self.recipe.schema_for(base).map(|s| match s {
+            Schema::Table(s) => s,
+            _ => panic!("non-base schema {:?} returned for table '{}'", s, base),
+        });
 
         Some(TableBuilder {
             local_port: None,
@@ -997,7 +1022,7 @@ impl ControllerInner {
                 topo_removals.reverse();
 
                 for leaf in topo_removals {
-                    self.remove_query_node(leaf)?;
+                    self.remove_leaf(leaf)?;
                 }
 
                 // now remove bases
@@ -1106,7 +1131,7 @@ impl ControllerInner {
         graphviz(&self.ingredients, detailed, &self.materializations)
     }
 
-    fn remove_query_node(&mut self, leaf: NodeIndex) -> Result<(), String> {
+    fn remove_leaf(&mut self, leaf: NodeIndex) -> Result<(), String> {
         let mut removals = vec![];
         let start = leaf;
         assert!(!self.ingredients[leaf].is_source());
@@ -1120,53 +1145,42 @@ impl ControllerInner {
         // We're looking for a single egress node that connects the query node to readers in
         // other domains.
         let mut nodes = vec![];
-        let egress_node = {
-            let num_children = self
-                .ingredients
+        let num_children = self
+            .ingredients
+            .neighbors_directed(leaf, petgraph::EdgeDirection::Outgoing)
+            .count();
+        if num_children == 1 {
+            let child = self.ingredients
                 .neighbors_directed(leaf, petgraph::EdgeDirection::Outgoing)
-                .count();
-            if num_children == 1 {
-                self.ingredients
-                    .neighbors_directed(leaf, petgraph::EdgeDirection::Outgoing)
-                    .next()
-                    .unwrap()
-            } else {
-                // should not happen, since we remove nodes in reverse topological order
-                crit!(
-                    self.log,
-                    "not removing node {} yet, as it has unexpected children or none at all",
-                    leaf.index();
-                    "num_children" => num_children,
-                );
-                unreachable!();
-            }
-        };
+                .next()
+                .unwrap();
+            assert!(self.ingredients[child].is_egress());
 
-        // Remove the egress node and its children
-        let mut bfs = Bfs::new(&self.ingredients, egress_node);
-        while let Some(child) = bfs.next(&self.ingredients) {
-            if self.ingredients
-                .neighbors_directed(child, petgraph::EdgeDirection::Outgoing)
-                .count() == 0
-            {
-                removals.push(child);
-                nodes.push(child);
+            // Remove the egress node and its children
+            let mut bfs = Bfs::new(&self.ingredients, child);
+            while let Some(child) = bfs.next(&self.ingredients) {
+                if self.ingredients
+                    .neighbors_directed(child, petgraph::EdgeDirection::Outgoing)
+                    .count() == 0
+                {
+                    removals.push(child);
+                    nodes.push(child);
+                }
             }
-        }
-        debug!(
-            self.log, "Removing egress node and its children";
-            "node" => egress_node.index(),
-            "leaf" => leaf.index(),
-        );
-
-        // The nodes we remove first do not have children any more
-        for node in &nodes {
-            assert_eq!(
-                self.ingredients
-                    .neighbors_directed(*node, petgraph::EdgeDirection::Outgoing)
-                    .count(),
-                0
+            debug!(
+                self.log, "Removing egress node and its children";
+                "node" => child.index(),
+                "leaf" => leaf.index(),
             );
+        } else if num_children > 1 {
+            // should not happen, since we remove nodes in reverse topological order
+            crit!(
+                self.log,
+                "not removing node {} yet, as it still has non-reader-related children",
+                leaf.index();
+                "num_children" => num_children,
+            );
+            unreachable!();
         }
 
         while let Some(node) = nodes.pop() {
@@ -1268,7 +1282,7 @@ impl ControllerInner {
     fn nodes_on_worker(&self, worker: Option<&WorkerIdentifier>) -> Vec<NodeIndex> {
         // NOTE(malte): this traverses all graph vertices in order to find those assigned to a
         // domain. We do this to avoid keeping separate state that may get out of sync, but it
-        // could become a performance bottleneck in the future (e.g., when recovergin large
+        // could become a performance bottleneck in the future (e.g., when recovering large
         // graphs).
         let domain_nodes = |i: DomainIndex| -> Vec<NodeIndex> {
             self.ingredients
