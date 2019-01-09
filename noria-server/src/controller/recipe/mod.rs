@@ -690,6 +690,18 @@ impl Recipe {
             .collect()
     }
 
+    pub(crate) fn leafs_for_readers(&self, nodes: Vec<NodeIndex>) -> Vec<NodeIndex> {
+        nodes
+            .iter()
+            .flat_map(|ni| {
+                self.inc
+                    .as_ref()
+                    .expect("need SQL incorporator")
+                    .get_leafs_for_reader(*ni)
+            })
+            .collect()
+    }
+
     pub(crate) fn make_recovery(&self, mut affected_queries: Vec<String>) -> (Recipe, Recipe) {
         affected_queries.sort();
         affected_queries.dedup();

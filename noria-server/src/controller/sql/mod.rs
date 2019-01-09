@@ -45,6 +45,7 @@ pub struct SqlIncorporator {
     log: slog::Logger,
     mir_converter: SqlToMirConverter,
     leaf_addresses: HashMap<String, NodeIndex>,
+    reader_addresses: HashMap<NodeIndex, Vec<NodeIndex>>,
 
     named_queries: HashMap<String, u64>,
     query_graphs: HashMap<u64, QueryGraph>,
@@ -70,6 +71,7 @@ impl Default for SqlIncorporator {
             log: slog::Logger::root(slog::Discard, o!()),
             mir_converter: SqlToMirConverter::default(),
             leaf_addresses: HashMap::default(),
+            reader_addresses: HashMap::default(),
 
             named_queries: HashMap::default(),
             query_graphs: HashMap::default(),
@@ -175,10 +177,25 @@ impl SqlIncorporator {
         self.leaf_addresses.values().any(|nn| *nn == ni)
     }
 
+    // Queries for leaf views
     pub fn get_queries_for_node(&self, ni: NodeIndex) -> Vec<String> {
         self.leaf_addresses
             .iter()
             .filter_map(|(name, idx)| if *idx == ni { Some(name.clone()) } else { None })
+            .collect()
+    }
+
+    // Leaf nodes for reader nodes
+    pub fn get_leafs_for_reader(&self, ni: NodeIndex) -> Vec<NodeIndex> {
+        self.reader_addresses
+            .iter()
+            .filter_map(|(leaf, idxs)| {
+                if idxs.contains(&ni) {
+                    Some(leaf.clone())
+                } else {
+                    None
+                }
+            })
             .collect()
     }
 
@@ -574,6 +591,10 @@ impl SqlIncorporator {
             .remove(query_name)
             .expect("tried to remove unknown query");
 
+        self.reader_addresses
+            .remove(&nodeid)
+            .expect("tried to remove query with untracked readers");
+
         let qg_hash = self.named_queries.remove(query_name).expect(&format!(
             "missing query hash for named query \"{}\"",
             query_name
@@ -911,6 +932,8 @@ impl SqlIncorporator {
         // record info about query
         self.leaf_addresses
             .insert(String::from(query_name.as_str()), qfp.query_leaf);
+        let readers = mig.mainline.ingredients[qfp.query_leaf].get_readers().to_vec();
+        self.reader_addresses.insert(qfp.query_leaf, readers);
 
         Ok(qfp)
     }
