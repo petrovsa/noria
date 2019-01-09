@@ -58,7 +58,7 @@ fn build_authority(
     if log {
         builder.log_with(logger_pls());
     }
-    builder.set_sharding(DEFAULT_SHARDING);
+    builder.set_sharding(None);
     builder.set_persistence(get_persistence_params(prefix));
     builder.set_replication_factor(DEFAULT_REPLICAS);
     builder.build(authority).unwrap()
@@ -2312,29 +2312,38 @@ fn remove_query() {
 }
 
 #[test]
-fn reader_replica_basic() {
+fn reader_replica_three_workers() {
     let txt = "CREATE TABLE x (a int);\n
                QUERY q: SELECT a from x;\n";
 
-    let mut g = ControllerBuilder::default().build_local().unwrap();
+    // Start Noria on three separate workers
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g = build_authority("worker-0", authority.clone(), false);
+    let mut g1 = build_authority("worker-1", authority.clone(), false);
+    let mut g2 = build_authority("worker-2", authority.clone(), false);
+
     g.install_recipe(txt).unwrap();
     assert_eq!(g.inputs().unwrap().len(), 1);
-    assert_eq!(g.outputs().unwrap().len(), DEFAULT_REPLICAS);
-    assert!(DEFAULT_REPLICAS > 1);
+    assert_eq!(g.outputs().unwrap().len(), 3);
 
     let mut mutx = g.table("x").unwrap();
     let mut q1 = g.view("q").unwrap().into_exclusive().unwrap();
     let mut q2 = g.view("q").unwrap().into_exclusive().unwrap();
-    let mut q3 = g.view("q").unwrap().into_exclusive().unwrap();
+    let mut q0 = g.view("q").unwrap().into_exclusive().unwrap();
 
     // These are actually views to different readers
     assert_eq!(q1.reader_index(), 1);
     assert_eq!(q2.reader_index(), 2);
-    assert_eq!(q3.reader_index(), 0);
+    assert_eq!(q0.reader_index(), 0);
+
+    // These views should all be on different workers
+    // q1 -> w1
+    // q2 -> w2
+    // q0 -> w0
 
     assert_eq!(q1.lookup(&[0.into()], true).unwrap().len(), 0);
     assert_eq!(q2.lookup(&[0.into()], true).unwrap().len(), 0);
-    assert_eq!(q3.lookup(&[0.into()], true).unwrap().len(), 0);
+    assert_eq!(q0.lookup(&[0.into()], true).unwrap().len(), 0);
 
     mutx.insert(vec![13.into()]).unwrap();
     mutx.insert(vec![21.into()]).unwrap();
@@ -2344,7 +2353,11 @@ fn reader_replica_basic() {
     // Writes are reflected in all readers
     assert_eq!(q1.lookup(&[0.into()], true).unwrap().len(), 3);
     assert_eq!(q2.lookup(&[0.into()], true).unwrap().len(), 3);
-    assert_eq!(q3.lookup(&[0.into()], true).unwrap().len(), 3);
+    assert_eq!(q0.lookup(&[0.into()], true).unwrap().len(), 3);
+
+    g.shutdown_now();
+    g1.shutdown_now();
+    g2.shutdown_now();
 }
 
 #[test]
@@ -2357,25 +2370,12 @@ fn reader_replica_kill_worker_writes() {
     let mut g0 = build_authority("worker-0", authority.clone(), false);
     let mut g1 = build_authority("worker-1", authority.clone(), false);
     let mut g2 = build_authority("worker-2", authority.clone(), false);
-    sleep();
-
     g0.install_recipe(txt).unwrap();
-    assert_eq!(g0.inputs().unwrap().len(), 1);
-    assert_eq!(g0.outputs().unwrap().len(), DEFAULT_REPLICAS);
-    assert!(DEFAULT_REPLICAS > 1);
 
     let mut mutx = g0.table("x").unwrap();
     let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let q2 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let q0 = g0.view("q").unwrap().into_exclusive().unwrap();
-
-    // These views should all be on different workers
-    assert_eq!(q0.reader_index(), 0);
-    assert_eq!(q1.reader_index(), 1);
-    assert_eq!(q2.reader_index(), 2);
-    // q1 -> w1
-    // q2 -> w2
-    // q0 -> w0
+    let _q2 = g0.view("q").unwrap().into_exclusive().unwrap();
+    let _q0 = g0.view("q").unwrap().into_exclusive().unwrap();
 
     // Write to normal instance
     mutx.insert(vec![100.into()]).unwrap();
@@ -2407,25 +2407,12 @@ fn reader_replica_kill_worker_reads() {
     let mut g0 = build_authority("worker-0", authority.clone(), false);
     let mut g1 = build_authority("worker-1", authority.clone(), false);
     let mut g2 = build_authority("worker-2", authority.clone(), false);
-    sleep();
-
     g0.install_recipe(txt).unwrap();
-    assert_eq!(g0.inputs().unwrap().len(), 1);
-    assert_eq!(g0.outputs().unwrap().len(), DEFAULT_REPLICAS);
-    assert!(DEFAULT_REPLICAS > 1);
 
     let mut mutx = g0.table("x").unwrap();
     let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
     let mut q2 = g0.view("q").unwrap().into_exclusive().unwrap();
     let mut q0 = g0.view("q").unwrap().into_exclusive().unwrap();
-
-    // These views should all be on different workers
-    assert_eq!(q0.reader_index(), 0);
-    assert_eq!(q1.reader_index(), 1);
-    assert_eq!(q2.reader_index(), 2);
-    // q1 -> w1
-    // q2 -> w2
-    // q0 -> w0
 
     // Write to normal instance
     mutx.insert(vec![100.into()]).unwrap();
