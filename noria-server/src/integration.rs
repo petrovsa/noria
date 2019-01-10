@@ -2361,6 +2361,48 @@ fn reader_replica_three_workers() {
 }
 
 #[test]
+fn reader_replica_client_failover() {
+    let txt = "CREATE TABLE x (a int);\n
+               QUERY q: SELECT a from x;\n";
+
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g0 = build_authority("worker-0", authority.clone(), false);
+    let mut g1 = build_authority("worker-1", authority.clone(), false);
+    let mut g2 = build_authority("worker-2", authority.clone(), false);
+    g0.install_recipe(txt).unwrap();
+
+    let mut mutx = g0.table("x").unwrap();
+    let mut q = g0.view("q").unwrap().into_exclusive().unwrap();
+
+    // We should initially have a handle to worker 1
+    mutx.insert(vec![13.into()]).unwrap();
+    sleep();
+    assert_eq!(q.lookup(&[0.into()], true).unwrap().len(), 1);
+    assert_eq!(q.reader_index(), 1);
+
+    // After killing worker 1, we should have a handle to worker 2
+    g1.shutdown_now();
+    thread::sleep(Duration::from_secs(10));
+    mutx.insert(vec![21.into()]).unwrap();
+    sleep();
+    assert!(q.lookup(&[0.into()], true).is_err());
+    // assert_eq!(q.lookup(&[0.into()], true).unwrap().len(), 2);
+    // assert_eq!(q.reader_index(), 2);
+
+    // After killing worker 2, we should have a handle to worker 0
+    g2.shutdown_now();
+    // thread::sleep(Duration::from_secs(10));
+    // mutx.insert(vec![34.into()]).unwrap();
+    // sleep();
+    // assert!(q.lookup(&[0.into()], false).is_err());
+    // assert_eq!(q.lookup(&[0.into()], false).unwrap().len(), 3);
+    // assert_eq!(q.reader_index(), 0);
+
+    // Shut down the last worker
+    g0.shutdown_now();
+}
+
+#[test]
 fn reader_replica_kill_worker_writes() {
     let txt = "CREATE TABLE x (a int);\n
                QUERY q: SELECT COUNT(*) from x;\n";

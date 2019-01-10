@@ -152,6 +152,9 @@ impl<A: Authority> LocalControllerHandle<A> {
             drop(self.kill.take());
             rt.shutdown_now().wait().unwrap();
         }
+        if let Some(io) = self.iopool.take() {
+            io.shutdown();
+        }
     }
 
     /// Wait for associated local instance to exit (presumably with an error).

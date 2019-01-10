@@ -18,6 +18,9 @@ pub enum ViewError {
     /// The given view is not yet available.
     #[fail(display = "the view is not yet available")]
     NotYetAvailable,
+    /// The given view will switch to a new connection on the next use.
+    #[fail(display = "the view will switch to a new connection on the next use")]
+    NewConnection,
     /// A lower-level error occurred while communicating with Soup.
     #[fail(display = "{}", _0)]
     TransportError(#[cause] TransportError),
@@ -196,6 +199,12 @@ impl View<SharedConnection> {
     allow(clippy::len_without_is_empty)
 )]
 impl<E> View<E> {
+    /// Reestablishes the connection to a view, possibly connecting to a new replica
+    fn reset_view(&mut self) -> Result<(), ViewError> {
+        println!("reset_view");  // TODO(ygina)
+        Err(ViewError::NewConnection)
+    }
+
     /// Get the index of the corresponding Reader in the list of Readers for this view
     pub fn reader_index(&self) -> usize {
         self.reader_index
@@ -267,10 +276,15 @@ impl<E> View<E> {
                     keys,
                     block,
                 })
-                .map_err(TransportError::from)?;
+                .map_err(TransportError::from);
             match reply {
-                ReadReply::Normal(Ok(rows)) => Ok(rows),
-                ReadReply::Normal(Err(())) => Err(ViewError::NotYetAvailable),
+                Ok(ReadReply::Normal(Ok(rows))) => Ok(rows),
+                Ok(ReadReply::Normal(Err(()))) => Err(ViewError::NotYetAvailable),
+                Err(e) => {
+                    drop(shard);
+                    self.reset_view()?;
+                    Err(e.into())
+                },
                 _ => unreachable!(),
             }
         } else {
