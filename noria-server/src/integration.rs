@@ -2459,6 +2459,40 @@ fn reader_replica_kill_worker_reads() {
 }
 
 #[test]
+fn reader_replica_spawn_new_readers() {
+    let txt = "CREATE TABLE x (a int);\n
+               QUERY q: SELECT a from x;\n";
+
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g0 = build_authority("worker-0", authority.clone(), false);
+    let mut g1 = build_authority("worker-1", authority.clone(), false);
+    let mut g2 = build_authority("worker-2", authority.clone(), false);
+    let mut g3 = build_authority("worker-3", authority.clone(), false);
+    g0.install_recipe(txt).unwrap();
+
+    // We should initially get handles to readers 1,2,0 in that order.
+    assert_eq!(g0.view("q").unwrap().reader_index(), 1);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 2);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 0);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 1);  // cycle back
+
+    // Shutting down worker-2 with reader 2 should get us handles to 3,0,1
+    // because a reader should have been spawned on worker-3.
+    g2.shutdown_now();
+    thread::sleep(Duration::from_secs(10));
+    let mut mutx = g0.table("x").unwrap();
+    mutx.insert(vec![100.into()]).unwrap();
+    assert_eq!(g0.view("q").unwrap().reader_index(), 3);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 0);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 1);
+    assert_eq!(g0.view("q").unwrap().reader_index(), 3);  // cycle back
+
+    g0.shutdown_now();
+    g1.shutdown_now();
+    g3.shutdown_now();
+}
+
+#[test]
 fn correct_nested_view_schema() {
     use nom_sql::{ColumnSpecification, SqlType};
 

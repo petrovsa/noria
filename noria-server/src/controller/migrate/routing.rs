@@ -92,6 +92,10 @@ pub fn add(
                         // it does! does `domain` have an ingress already listed there?
                         for i in graph.neighbors_directed(pchild, petgraph::EdgeDirection::Outgoing)
                         {
+                            // can't use dropped nodes though
+                            if graph[i].is_dropped() {
+                                continue;
+                            }
                             assert!(graph[i].is_ingress());
                             if graph[i].domain() == domain {
                                 // it does! we can just reuse that ingress :D

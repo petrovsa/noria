@@ -28,7 +28,8 @@ pub struct Node {
     taken: bool,
 
     sharded_by: Sharding,
-    next_reader: usize,
+    next_reader_to_build: usize,
+    next_reader_to_add: usize,
     readers: Vec<NodeIndex>,
 }
 
@@ -52,7 +53,8 @@ impl Node {
             taken: false,
 
             sharded_by: Sharding::None,
-            next_reader: 0,
+            next_reader_to_build: 0,
+            next_reader_to_add: 0,
             readers: Vec::new(),
         }
     }
@@ -112,6 +114,7 @@ impl Node {
 
     /// The node index `ni` being added is the index of a reader for this node.
     pub fn add_reader(&mut self, ni: NodeIndex) {
+        self.next_reader_to_add += 1;
         self.readers.push(ni)
     }
 
@@ -120,7 +123,7 @@ impl Node {
         if let Some(i) = self.readers.iter().position(|&i| i == ni) {
             self.readers.remove(i);
             // Make sure the pointer isn't out of bounds
-            self.next_reader %= self.num_readers();
+            self.next_reader_to_build %= self.num_readers();
             true
         } else {
             false
@@ -366,13 +369,18 @@ impl Node {
         &self.readers[..]
     }
 
+    /// The reader index of the next reader to be added.
+    pub fn next_reader_to_add(&self) -> usize {
+        self.next_reader_to_add
+    }
+
     /// Returns reader replicas in round robin order each time the method is called,
     /// with the primary reader (reader index = 0) being returned last.
-    pub fn next_reader(&mut self) -> Option<NodeIndex> {
+    pub fn next_reader_to_build(&mut self) -> Option<NodeIndex> {
         if self.num_readers() > 0 {
-            self.next_reader += 1;
-            self.next_reader %= self.num_readers();
-            Some(*self.readers.get(self.next_reader).unwrap())
+            self.next_reader_to_build += 1;
+            self.next_reader_to_build %= self.num_readers();
+            Some(*self.readers.get(self.next_reader_to_build).unwrap())
         } else {
             None
         }
