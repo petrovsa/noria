@@ -12,9 +12,9 @@ use hyper::{self, Method, StatusCode};
 use mio::net::TcpListener;
 use noria::builders::*;
 use noria::channel::tcp::{SendError, TcpSender};
-use noria::consensus::{Authority, Epoch, STATE_KEY};
+use noria::consensus::{Authority, Epoch, LocalAuthority, STATE_KEY};
 use noria::debug::stats::{DomainStats, GraphStats, NodeStats};
-use noria::ActivationResult;
+use noria::{ActivationResult, ExclusiveConnection, View};
 use nom_sql::ColumnSpecification;
 use petgraph;
 use petgraph::visit::Bfs;
@@ -961,7 +961,9 @@ impl ControllerInner {
         if context.get("group").is_none() {
             for g in groups {
                 let rgb: Option<ViewBuilder> = self.view_builder(&g);
-                let mut view = rgb.map(|rgb| rgb.build_exclusive().unwrap()).unwrap();
+                let mut view: View<ExclusiveConnection, LocalAuthority> = rgb.map(|rgb| {
+                    rgb.build_exclusive().unwrap()
+                }).unwrap();
                 let my_groups: Vec<DataType> = view
                     .lookup(uid, true)
                     .unwrap()

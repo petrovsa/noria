@@ -9,7 +9,7 @@ use std::time::Duration;
 
 pub(crate) struct Client {
     c: Constructor,
-    r: noria::View<noria::ExclusiveConnection>,
+    r: noria::View<noria::ExclusiveConnection, noria::ZookeeperAuthority>,
     #[allow(dead_code)]
     w: noria::Table<noria::ExclusiveConnection>,
 }
@@ -26,7 +26,7 @@ fn make_mutator(
 fn make_getter(
     c: &mut Handle,
     view: &str,
-) -> Result<noria::View<noria::ExclusiveConnection>, Error> {
+) -> Result<noria::View<noria::ExclusiveConnection, noria::ZookeeperAuthority>, Error> {
     Ok(c.view(view)?.into_exclusive()?)
 }
 

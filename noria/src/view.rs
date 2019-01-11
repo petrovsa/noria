@@ -1,4 +1,6 @@
 use crate::channel::rpc::RpcClient;
+use crate::consensus::{Authority, LocalAuthority};
+use crate::controller::ControllerHandle;
 use crate::data::*;
 use crate::error::TransportError;
 use crate::{ExclusiveConnection, SharedConnection};
@@ -74,7 +76,7 @@ pub struct ViewBuilder {
 
 impl ViewBuilder {
     #[doc(hidden)]
-    pub fn build_exclusive(self) -> io::Result<View<ExclusiveConnection>> {
+    pub fn build_exclusive<A: Authority>(self) -> io::Result<View<ExclusiveConnection, A>> {
         let conns = self
             .shards
             .iter()
@@ -86,6 +88,7 @@ impl ViewBuilder {
             node: self.node,
             columns: self.columns,
             schema: self.schema,
+            controller: None,
             shard_addrs: self.shards,
             shards: conns,
             exclusivity: ExclusiveConnection,
@@ -100,10 +103,10 @@ impl ViewBuilder {
     }
 
     /// Build a `View` out of a `ViewBuilder`
-    pub(crate) fn build(
+    pub(crate) fn build<A: Authority>(
         mut self,
         rpcs: &mut HashMap<(SocketAddr, usize), ViewRpc>,
-    ) -> io::Result<View<SharedConnection>> {
+    ) -> io::Result<View<SharedConnection, A>> {
         let sports = &mut self.local_ports;
         let conns = self
             .shards
@@ -136,6 +139,7 @@ impl ViewBuilder {
             node: self.node,
             columns: self.columns,
             schema: self.schema,
+            controller: None,
             shard_addrs: self.shards,
             shards: conns,
             exclusivity: SharedConnection,
@@ -149,12 +153,13 @@ impl ViewBuilder {
 /// connections to the Soup workers. For this reason, `View` is *not* `Send` or `Sync`. To
 /// get a handle that can be sent to a different thread (i.e., one with its own dedicated
 /// connections), call `View::into_exclusive`.
-pub struct View<E = SharedConnection> {
+pub struct View<E = SharedConnection, A = LocalAuthority> {
     reader_index: usize,
     node: NodeIndex,
     columns: Vec<String>,
     schema: Option<Vec<ColumnSpecification>>,
 
+    controller: Option<ControllerHandle<A>>,
     shards: Vec<ViewRpc>,
     shard_addrs: Vec<SocketAddr>,
 
@@ -162,13 +167,14 @@ pub struct View<E = SharedConnection> {
     exclusivity: E,
 }
 
-impl Clone for View<SharedConnection> {
+impl<A:Authority> Clone for View<SharedConnection, A> {
     fn clone(&self) -> Self {
         View {
             reader_index: self.reader_index,
             node: self.node,
             columns: self.columns.clone(),
             schema: self.schema.clone(),
+            controller: self.controller.clone(),
             shards: self.shards.clone(),
             shard_addrs: self.shard_addrs.clone(),
             exclusivity: SharedConnection,
@@ -176,12 +182,12 @@ impl Clone for View<SharedConnection> {
     }
 }
 
-unsafe impl Send for View<ExclusiveConnection> {}
+unsafe impl<A: Authority> Send for View<ExclusiveConnection, A> {}
 
-impl View<SharedConnection> {
+impl<A: Authority> View<SharedConnection, A> {
     /// Produce a `View` with dedicated Soup connections so it can be safely sent across
     /// threads.
-    pub fn into_exclusive(self) -> io::Result<View<ExclusiveConnection>> {
+    pub fn into_exclusive(self) -> io::Result<View<ExclusiveConnection, A>> {
         ViewBuilder {
             reader_index: self.reader_index,
             node: self.node,
@@ -198,11 +204,17 @@ impl View<SharedConnection> {
     feature = "cargo-clippy",
     allow(clippy::len_without_is_empty)
 )]
-impl<E> View<E> {
+impl<A: Authority, E> View<E, A> {
     /// Reestablishes the connection to a view, possibly connecting to a new replica
     fn reset_view(&mut self) -> Result<(), ViewError> {
         println!("reset_view");  // TODO(ygina)
         Err(ViewError::NewConnection)
+    }
+
+    /// Set the controller so the view is able to reestablish a connection
+    pub fn set_controller(&mut self, controller: &mut ControllerHandle<A>) {
+        assert!(self.controller.is_none());
+        self.controller = Some(controller.clone());
     }
 
     /// Get the index of the corresponding Reader in the list of Readers for this view

@@ -4,7 +4,7 @@ use crate::consensus::{self, Authority};
 use crate::debug::stats;
 use crate::table::{Table, TableBuilder, TableRpc};
 use crate::view::{View, ViewBuilder, ViewRpc};
-use crate::ActivationResult;
+use crate::{ActivationResult, SharedConnection};
 use failure::{self, ResultExt};
 use futures::{
     sync::{mpsc, oneshot},
@@ -61,6 +61,20 @@ pub struct ControllerHandle<A> {
         )>,
     >,
     rt: Option<thread::JoinHandle<()>>,
+}
+
+impl<A: Authority> Clone for ControllerHandle<A> {
+    fn clone(&self) -> Self {
+        ControllerHandle {
+            url: self.url.clone(),
+            local_port: self.local_port.clone(),
+            authority: self.authority.clone(),
+            views: self.views.clone(),
+            domains: self.domains.clone(),
+            req: self.req.clone(),
+            rt: None,
+        }
+    }
 }
 
 /// A pointer that lets you construct a new `ControllerHandle` from an existing one.
@@ -212,7 +226,7 @@ impl<A: Authority> ControllerHandle<A> {
     /// Obtain a `View` that allows you to query the given external view. If the view has
     /// multiple reader replicas, returns a new `View` reader replica in round robin order
     /// each time the api is called.
-    pub fn view(&mut self, name: &str) -> Result<View, failure::Error> {
+    pub fn view(&mut self, name: &str) -> Result<View<SharedConnection, A>, failure::Error> {
         // This call attempts to detect if this function is being called in a loop. If this is
         // getting false positives, then it is safe to increase the allowed hit count, however, the
         // limit_mutator_creation test in src/controller/handle.rs should then be updated as well.
@@ -227,11 +241,13 @@ impl<A: Authority> ControllerHandle<A> {
                     g = g.with_local_port(port);
                 }
 
-                let g = g.build(&mut self.views)?;
+                let mut g = g.build(&mut self.views)?;
 
                 if self.local_port.is_none() {
                     self.local_port = Some(g.local_addr().unwrap().port());
                 }
+
+                g.set_controller(self);
 
                 Ok(g)
             })
@@ -318,6 +334,8 @@ impl<A: Authority> ControllerHandle<A> {
 impl<A> Drop for ControllerHandle<A> {
     fn drop(&mut self) {
         drop(self.req.take());
-        self.rt.take().unwrap().join().unwrap();
+        if self.rt.is_some() {
+            self.rt.take().unwrap().join().unwrap();
+        }
     }
 }
