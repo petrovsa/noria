@@ -45,7 +45,7 @@ pub struct SqlIncorporator {
     log: slog::Logger,
     mir_converter: SqlToMirConverter,
     leaf_addresses: HashMap<String, NodeIndex>,
-    reader_addresses: HashMap<NodeIndex, Vec<NodeIndex>>,
+    reader_addresses: HashMap<String, Vec<NodeIndex>>,
 
     named_queries: HashMap<String, u64>,
     query_graphs: HashMap<u64, QueryGraph>,
@@ -177,7 +177,7 @@ impl SqlIncorporator {
         self.leaf_addresses.values().any(|nn| *nn == ni)
     }
 
-    // Queries for leaf views
+    /// Queries for leaf views
     pub fn get_queries_for_node(&self, ni: NodeIndex) -> Vec<String> {
         self.leaf_addresses
             .iter()
@@ -185,18 +185,41 @@ impl SqlIncorporator {
             .collect()
     }
 
-    // Leaf nodes for reader nodes
-    pub fn get_leafs_for_reader(&self, ni: NodeIndex) -> Vec<NodeIndex> {
-        self.reader_addresses
+    /// Query name and leaf node for reader nodes
+    pub fn get_query_for_reader(&self, ni: NodeIndex) -> Option<(String, NodeIndex)> {
+        let leafs: Vec<(String, NodeIndex)> = self.reader_addresses
             .iter()
-            .filter_map(|(leaf, idxs)| {
+            .filter_map(|(q, idxs)| {
                 if idxs.contains(&ni) {
-                    Some(leaf.clone())
+                    Some((q.clone(), self.leaf_addresses.get(q).unwrap().clone()))
                 } else {
                     None
                 }
             })
-            .collect()
+            .collect();
+
+        if leafs.len() == 0 {
+            None
+        } else if leafs.len() == 1 {
+            Some(leafs.get(0).unwrap().clone())
+        } else {
+            unreachable!();
+        }
+    }
+
+    /// The nodes that are readers and don't also have the leaf in the list. These are the readers
+    /// that need to be removed without touching the leaf node. If the leaf is in the list, that
+    /// means the reader was going to be removed anyway.
+    pub fn get_affected_readers(&self, nodes: &Vec<NodeIndex>) -> Vec<NodeIndex> {
+        let mut affected_readers = Vec::new();
+        for ni in nodes {
+            if let Some((_, leaf)) = self.get_query_for_reader(*ni) {
+                if !nodes.contains(&leaf) {
+                    affected_readers.push(*ni);
+                }
+            }
+        }
+        affected_readers
     }
 
     fn consider_query_graph(
@@ -592,7 +615,7 @@ impl SqlIncorporator {
             .expect("tried to remove unknown query");
 
         self.reader_addresses
-            .remove(&nodeid)
+            .remove(query_name)
             .expect("tried to remove query with untracked readers");
 
         let qg_hash = self.named_queries.remove(query_name).expect(&format!(
@@ -933,7 +956,7 @@ impl SqlIncorporator {
         self.leaf_addresses
             .insert(String::from(query_name.as_str()), qfp.query_leaf);
         let readers = mig.mainline.ingredients[qfp.query_leaf].get_readers().to_vec();
-        self.reader_addresses.insert(qfp.query_leaf, readers);
+        self.reader_addresses.insert(String::from(query_name.as_str()), readers);
 
         Ok(qfp)
     }

@@ -369,11 +369,13 @@ impl ControllerInner {
 
         // then, figure out which queries are affected (and thus must be removed and added again in
         // a migration)
-        let affected_queries = self.recipe.queries_for_nodes(affected_nodes);
+        let affected_queries = self.recipe.queries_for_nodes(&affected_nodes);
         let (recovery, mut original) = self.recipe.make_recovery(affected_queries);
 
         // activate recipe
-        self.apply_recipe(recovery.clone())
+        let readers_to_remove = self.recipe.affected_readers(&affected_nodes);
+        let queries_to_rebalance = self.recipe.queries_for_readers(&readers_to_remove);
+        self.apply_recipe_with_recovery(recovery.clone(), readers_to_remove, Vec::new())
             .expect("failed to apply recovery recipe");
 
         // we must do this *after* the migration, since the migration itself modifies the recipe in
@@ -384,7 +386,7 @@ impl ControllerInner {
         original.set_sql_inc(tmp.sql_inc().clone());
 
         // back to original recipe, which should add the query again
-        self.apply_recipe(original)
+        self.apply_recipe_with_recovery(original, Vec::new(), queries_to_rebalance)
             .expect("failed to activate original recipe");
     }
 
@@ -997,7 +999,16 @@ impl ControllerInner {
         Ok(())
     }
 
-    fn apply_recipe(&mut self, mut new: Recipe) -> Result<ActivationResult, String> {
+    fn apply_recipe(&mut self, new: Recipe) -> Result<ActivationResult, String> {
+        self.apply_recipe_with_recovery(new, Vec::new(), Vec::new())
+    }
+
+    fn apply_recipe_with_recovery(
+        &mut self,
+        mut new: Recipe,
+        _readers_to_remove: Vec<NodeIndex>,
+        _queries_to_rebalance: Vec<(String, NodeIndex)>,
+    ) -> Result<ActivationResult, String> {
         let r = self.migrate(|mig| {
             new.activate(mig)
                 .map_err(|e| format!("failed to activate recipe: {}", e))

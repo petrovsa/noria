@@ -678,7 +678,7 @@ impl Recipe {
         }
     }
 
-    pub(crate) fn queries_for_nodes(&self, nodes: Vec<NodeIndex>) -> Vec<String> {
+    pub(crate) fn queries_for_nodes(&self, nodes: &Vec<NodeIndex>) -> Vec<String> {
         nodes
             .iter()
             .flat_map(|ni| {
@@ -690,16 +690,26 @@ impl Recipe {
             .collect()
     }
 
-    pub(crate) fn leafs_for_readers(&self, nodes: Vec<NodeIndex>) -> Vec<NodeIndex> {
-        nodes
+    pub(crate) fn queries_for_readers(&self, nodes: &Vec<NodeIndex>) -> Vec<(String, NodeIndex)> {
+        let mut qs: Vec<(String, NodeIndex)> = nodes
             .iter()
-            .flat_map(|ni| {
+            .filter_map(|ni| {
                 self.inc
                     .as_ref()
                     .expect("need SQL incorporator")
-                    .get_leafs_for_reader(*ni)
+                    .get_query_for_reader(*ni)
             })
-            .collect()
+            .collect();
+        qs.sort_by_key(|(q, _)| q.clone());
+        qs.dedup_by_key(|(q, _)| q.clone());
+        qs
+    }
+
+    pub(crate) fn affected_readers(&self, nodes: &Vec<NodeIndex>) -> Vec<NodeIndex> {
+        self.inc
+            .as_ref()
+            .expect("need SQL incorporator")
+            .get_affected_readers(nodes)
     }
 
     pub(crate) fn make_recovery(&self, mut affected_queries: Vec<String>) -> (Recipe, Recipe) {
