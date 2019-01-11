@@ -1006,7 +1006,7 @@ impl ControllerInner {
     fn apply_recipe_with_recovery(
         &mut self,
         mut new: Recipe,
-        _readers_to_remove: Vec<NodeIndex>,
+        readers_to_remove: Vec<NodeIndex>,
         _queries_to_rebalance: Vec<(String, NodeIndex)>,
     ) -> Result<ActivationResult, String> {
         let r = self.migrate(|mig| {
@@ -1054,6 +1054,11 @@ impl ControllerInner {
                     );
                     // now drop the (orphaned) base
                     self.remove_nodes(vec![base].as_slice()).unwrap();
+                }
+
+                // remove readers
+                for ni in readers_to_remove {
+                    self.remove_reader(&ni)?;
                 }
 
                 self.recipe = new;
@@ -1220,6 +1225,35 @@ impl ControllerInner {
         }
 
         self.remove_nodes(removals.as_slice())
+    }
+
+    fn remove_reader(&mut self, ni: &NodeIndex) -> Result<(), String> {
+        assert!(self.ingredients[*ni].is_reader());
+        assert_eq!(self
+            .ingredients
+            .neighbors_directed(*ni, petgraph::EdgeDirection::Outgoing)
+            .count(),
+            0,
+        );
+
+        // remove the reader from the parent's state, and the worker just in case
+        let parent = self.ingredients[*ni].with_reader(|r| r.is_for()).unwrap();
+        if self.ingredients[parent].remove_reader(*ni) {
+            let ingress = self
+                .ingredients
+                .neighbors_directed(*ni, petgraph::EdgeDirection::Incoming)
+                .next()
+                .unwrap();
+            self.remove_nodes(&[*ni, ingress])?;
+            debug!(self.log, "Removed reader {} from parent {}", ni.index(), parent.index());
+            Ok(())
+        } else {
+            Err(format!(
+                "Reader {} did not exist in parent {}'s state",
+                ni.index(),
+                parent.index()
+            ))
+        }
     }
 
     fn remove_nodes(&mut self, removals: &[NodeIndex]) -> Result<(), String> {

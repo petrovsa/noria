@@ -115,6 +115,18 @@ impl Node {
         self.readers.push(ni)
     }
 
+    /// Removes the reader with node index `ni`, returning whether it was a success.
+    pub fn remove_reader(&mut self, ni: NodeIndex) -> bool {
+        if let Some(i) = self.readers.iter().position(|&i| i == ni) {
+            self.readers.remove(i);
+            // Make sure the pointer isn't out of bounds
+            self.next_reader %= self.num_readers();
+            true
+        } else {
+            false
+        }
+    }
+
     pub fn on_commit(&mut self, remap: &HashMap<NodeIndex, IndexPair>) {
         // this is *only* overwritten for these asserts.
         assert!(!self.taken);
