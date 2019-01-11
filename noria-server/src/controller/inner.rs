@@ -752,7 +752,7 @@ impl ControllerInner {
             }
         };
 
-        self.ingredients[node].next_reader().map(|ni| {
+        self.ingredients[node].next_reader_to_build().map(|ni| {
             let domain = self.ingredients[ni].domain();
             let columns = self.ingredients[ni].fields().to_vec();
             let schema = self.view_schema(ni);
@@ -1007,9 +1007,13 @@ impl ControllerInner {
         &mut self,
         mut new: Recipe,
         readers_to_remove: Vec<NodeIndex>,
-        _queries_to_rebalance: Vec<(String, NodeIndex)>,
+        queries_to_rebalance: Vec<(String, NodeIndex)>,
     ) -> Result<ActivationResult, String> {
         let r = self.migrate(|mig| {
+            for (name, ni) in queries_to_rebalance {
+                mig.ensure_reader_for(ni, Some(name), mig.mainline.replication_factor);
+            }
+
             new.activate(mig)
                 .map_err(|e| format!("failed to activate recipe: {}", e))
         });

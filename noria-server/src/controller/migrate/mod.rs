@@ -205,33 +205,54 @@ impl<'a> Migration<'a> {
         self.mainline.graph()
     }
 
-    fn ensure_reader_for(&mut self, n: NodeIndex, name: Option<String>, replication_factor: usize) {
-        if !self.readers.contains_key(&n) {
-            let mut readers = Vec::with_capacity(replication_factor);
-            for i in 0..replication_factor {
-                // Make a reader node
-                let r = node::special::Reader::new(n, i);
-                let r = if let Some(name) = &name {
-                    self.mainline.ingredients[n].named_mirror(r, format!("{}_{}", name, i))
-                } else {
-                    self.mainline.ingredients[n].mirror(r)
-                };
-
-                // Add it to the graph along with an edge to the node it reads for
-                let r = self.mainline.ingredients.add_node(r);
-                self.mainline.ingredients.add_edge(n, r, ());
-                self.mainline.ingredients[n].add_reader(r);
-                info!(self.log,
-                      "adding reader node";
-                      "node" => r.index(),
-                      "for_node" => n.index(),
-                      "reader_index" => i
-                );
-                readers.push(r);
-            }
-
-            self.readers.insert(n, readers);
+    /// Ensures the given node has `replication_factor` number of readers. Stores only the newly
+    /// added readers to the migration state, then returns all readers for the given node.
+    pub fn ensure_reader_for(
+        &mut self,
+        n: NodeIndex,
+        name: Option<String>,
+        replication_factor: usize
+    ) -> Vec<NodeIndex> {
+        if self.readers.contains_key(&n) {
+            return self.readers.get(&n).unwrap().clone();
         }
+
+        let mut readers = self.mainline.ingredients[n].get_readers().to_vec();
+        let mut new_readers = Vec::new();
+        while readers.len() < replication_factor {
+            // Make a reader node
+            let i = self.mainline.ingredients[n].next_reader_to_add();
+            let r = node::special::Reader::new(n, i);
+            let r = if let Some(name) = &name {
+                self.mainline.ingredients[n].named_mirror(r, format!("{}_{}", name, i))
+            } else {
+                self.mainline.ingredients[n].mirror(r)
+            };
+
+            // Add it to the graph along with an edge to the node it reads for
+            let r = self.mainline.ingredients.add_node(r);
+            self.mainline.ingredients.add_edge(n, r, ());
+            self.mainline.ingredients[n].add_reader(r);
+            debug!(self.log,
+                  "adding reader node";
+                  "node" => r.index(),
+                  "for_node" => n.index(),
+                  "reader_index" => i
+            );
+            readers.push(r);
+            new_readers.push(r);
+        }
+
+        // TODO(ygina): implement removing readers when num readers > replication_factor
+        info!(
+            self.log,
+            "added {} readers for node {}, total {} readers",
+            new_readers.len(),
+            n.index(),
+            readers.len(),
+        );
+        self.readers.insert(n, new_readers);
+        readers
     }
 
     /// Set up the given node such that its output can be efficiently queried.
@@ -239,28 +260,25 @@ impl<'a> Migration<'a> {
     /// To query into the maintained state, use `ControllerInner::get_getter`.
     #[cfg(test)]
     pub fn maintain_anonymous(&mut self, n: NodeIndex, key: &[usize]) -> Vec<NodeIndex> {
-        self.ensure_reader_for(n, None, self.mainline.replication_factor);
-        let ris = &self.readers[&n];
+        let ris = self.ensure_reader_for(n, None, self.mainline.replication_factor);
 
-        for ri in ris {
+        for ri in &ris {
             self.mainline.ingredients[*ri]
                 .with_reader_mut(|r| r.set_key(key))
                 .unwrap();
         }
 
-        ris.to_vec()
+        ris
     }
 
     /// Set up the given node such that its output can be efficiently queried.
     ///
     /// To query into the maintained state, use `ControllerInner::get_getter`.
     pub fn maintain(&mut self, name: String, n: NodeIndex, key: &[usize]) {
-        self.ensure_reader_for(n, Some(name), self.mainline.replication_factor);
-
-        let ris = &self.readers[&n];
+        let ris = self.ensure_reader_for(n, Some(name), self.mainline.replication_factor);
 
         for ri in ris {
-            self.mainline.ingredients[*ri]
+            self.mainline.ingredients[ri]
                 .with_reader_mut(|r| r.set_key(key))
                 .unwrap();
         }
