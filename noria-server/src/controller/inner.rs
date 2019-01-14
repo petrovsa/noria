@@ -1011,7 +1011,23 @@ impl ControllerInner {
     ) -> Result<ActivationResult, String> {
         let r = self.migrate(|mig| {
             for (name, ni) in queries_to_rebalance {
-                mig.ensure_reader_for(ni, Some(name), mig.mainline.replication_factor);
+                let reader = mig
+                    .mainline
+                    .ingredients[ni]
+                    .get_readers()
+                    .get(0)
+                    .expect("should only rebalance queries with an existing reader")
+                    .clone();
+                let key = mig
+                    .mainline
+                    .ingredients[reader]
+                    .with_reader(|r| r
+                        .key()
+                        .expect("existing reader should be materialized")
+                        .to_vec()
+                        .clone())
+                    .unwrap();
+                mig.maintain(name, ni, &key[..]);
             }
 
             new.activate(mig)
