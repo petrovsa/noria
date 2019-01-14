@@ -2355,6 +2355,10 @@ fn reader_replica_three_workers() {
     assert_eq!(q2.lookup(&[0.into()], true).unwrap().len(), 3);
     assert_eq!(q0.lookup(&[0.into()], true).unwrap().len(), 3);
 
+    // TODO(ygina): can we avoid having to do this?
+    drop(q1);
+    drop(q2);
+    drop(q0);
     g.shutdown_now();
     g1.shutdown_now();
     g2.shutdown_now();
@@ -2399,105 +2403,8 @@ fn reader_replica_client_failover() {
     // assert_eq!(q.reader_index(), 0);
 
     // Shut down the last worker
+    drop(q);
     g0.shutdown_now();
-}
-
-#[test]
-fn reader_replica_kill_worker_writes() {
-    let txt = "CREATE TABLE x (a int);\n
-               QUERY q: SELECT COUNT(*) from x;\n";
-
-    // Start Noria with three separate workers
-    let authority = Arc::new(LocalAuthority::new());
-    let mut g0 = build_authority("worker-0", authority.clone(), false);
-    let mut g1 = build_authority("worker-1", authority.clone(), false);
-    let mut g2 = build_authority("worker-2", authority.clone(), false);
-    g0.install_recipe(txt).unwrap();
-
-    let mut mutx = g0.table("x").unwrap();
-    let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let _q2 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let _q0 = g0.view("q").unwrap().into_exclusive().unwrap();
-
-    // Write to normal instance
-    mutx.insert(vec![100.into()]).unwrap();
-    sleep();
-    assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
-
-    // // Write after killing a replica-only worker
-    g2.shutdown_now();
-    // mutx.insert(vec![200.into()]).unwrap();
-    // sleep();
-    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
-
-    // // Write after killing the worker with the query node (no error)
-    g0.shutdown_now();
-    // mutx.insert(vec![300.into()]).unwrap();
-    // sleep();
-
-    // Kill the last worker
-    g1.shutdown_now();
-}
-
-#[test]
-fn reader_replica_kill_worker_reads() {
-    let txt = "CREATE TABLE x (a int);\n
-               QUERY q: SELECT COUNT(*) from x;\n";
-
-    // Start Noria with three separate workers
-    let authority = Arc::new(LocalAuthority::new());
-    let mut g0 = build_authority("worker-0", authority.clone(), false);
-    let mut g1 = build_authority("worker-1", authority.clone(), false);
-    let mut g2 = build_authority("worker-2", authority.clone(), false);
-    g0.install_recipe(txt).unwrap();
-
-    let mut mutx = g0.table("x").unwrap();
-    let mut q1 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let mut q2 = g0.view("q").unwrap().into_exclusive().unwrap();
-    let mut q0 = g0.view("q").unwrap().into_exclusive().unwrap();
-
-    // Write to normal instance
-    mutx.insert(vec![100.into()]).unwrap();
-    sleep();
-    assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
-    assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
-    assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(1));
-
-    // // Kill a replica-only worker
-    g2.shutdown_now();
-    // sleep();
-    // mutx.insert(vec![200.into()]).unwrap();
-    // sleep();
-
-    // // Only the view on THAT worker will establish a new connection, and the new
-    // // connection will be on one of the two remaining workers.
-    // assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
-    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
-    // assert!(q2.lookup(&[0.into()], true), Err(NEW_CONNECTION));
-    // assert_eq!(q2.reader_index(), 1);  // not 2
-    // assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(2));
-
-    // // Kill the worker with the query node.
-    g0.shutdown_now();
-    // sleep();
-    // mutx.insert(vec![300.into()]).unwrap();
-    // sleep();
-
-    // // All views need to establish a new connection since the graph had to be rebuilt
-    // assert!(q0.lookup(&[0.into()], true), Err(NEW_CONNECTION));
-    // assert!(q1.lookup(&[0.into()], true), Err(NEW_CONNECTION));
-    // assert!(q2.lookup(&[0.into()], true), Err(NEW_CONNECTION));
-    // assert_eq!(q0.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
-    // assert_eq!(q1.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
-    // assert_eq!(q2.lookup(&[0.into()], true).unwrap()[0][0], Int(3));
-
-    // // New connections were established in round robin order
-    // assert_eq!(q0.reader_index(), 2);
-    // assert_eq!(q1.reader_index(), 1);
-    // assert_eq!(q2.reader_index(), 0);
-
-    // // Kill the last worker
-    g1.shutdown_now()
 }
 
 #[test]
