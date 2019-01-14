@@ -769,6 +769,7 @@ impl ControllerInner {
             );
 
             ViewBuilder {
+                name: name.to_string(),
                 reader_index,
                 local_ports: vec![],
                 node: ni,

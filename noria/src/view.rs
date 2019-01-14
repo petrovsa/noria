@@ -23,6 +23,9 @@ pub enum ViewError {
     /// The given view will switch to a new connection on the next use.
     #[fail(display = "the view will switch to a new connection on the next use")]
     NewConnection,
+    /// The view tried to reset itself without a controller.
+    #[fail(display = "the view tried to reset itself without a controller")]
+    ResetError,
     /// A lower-level error occurred while communicating with Soup.
     #[fail(display = "{}", _0)]
     TransportError(#[cause] TransportError),
@@ -65,6 +68,7 @@ pub enum ReadReply {
 #[doc(hidden)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ViewBuilder {
+    pub name: String,
     pub reader_index: usize,
     pub node: NodeIndex,
     pub columns: Vec<String>,
@@ -84,6 +88,7 @@ impl ViewBuilder {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(View {
+            name: self.name,
             reader_index: self.reader_index,
             node: self.node,
             columns: self.columns,
@@ -135,6 +140,7 @@ impl ViewBuilder {
             .collect::<io::Result<Vec<_>>>()?;
 
         Ok(View {
+            name: self.name,
             reader_index: self.reader_index,
             node: self.node,
             columns: self.columns,
@@ -154,6 +160,7 @@ impl ViewBuilder {
 /// get a handle that can be sent to a different thread (i.e., one with its own dedicated
 /// connections), call `View::into_exclusive`.
 pub struct View<E = SharedConnection, A = LocalAuthority> {
+    name: String,
     reader_index: usize,
     node: NodeIndex,
     columns: Vec<String>,
@@ -170,6 +177,7 @@ pub struct View<E = SharedConnection, A = LocalAuthority> {
 impl<A:Authority> Clone for View<SharedConnection, A> {
     fn clone(&self) -> Self {
         View {
+            name: self.name.clone(),
             reader_index: self.reader_index,
             node: self.node,
             columns: self.columns.clone(),
@@ -188,7 +196,8 @@ impl<A: Authority> View<SharedConnection, A> {
     /// Produce a `View` with dedicated Soup connections so it can be safely sent across
     /// threads.
     pub fn into_exclusive(self) -> io::Result<View<ExclusiveConnection, A>> {
-        ViewBuilder {
+        let mut view = ViewBuilder {
+            name: self.name,
             reader_index: self.reader_index,
             node: self.node,
             local_ports: vec![],
@@ -196,7 +205,66 @@ impl<A: Authority> View<SharedConnection, A> {
             schema: self.schema,
             shards: self.shard_addrs,
         }
-        .build_exclusive()
+        .build_exclusive()?;
+        if let Some(mut g) = self.controller {
+            view.set_controller(&mut g);
+        }
+        Ok(view)
+    }
+}
+
+trait ViewController {
+    /// Attempts to reestablish a connection to a view, possibly connecting to a new replica
+    fn reset_view(&mut self) -> Result<(), String>;
+}
+
+impl<A: Authority> View<ExclusiveConnection, A> {
+    fn reset_view(&mut self) -> Result<(), ViewError> {
+        match &mut self.controller {
+            Some(ref mut g) => {
+                *self = g.view(&self.name).unwrap().into_exclusive().unwrap();
+                Ok(())
+            },
+            None => Err(ViewError::ResetError),
+        }
+    }
+
+    /// Retrieve the query results for the given parameter value.
+    ///
+    /// The method will block if the results are not yet available only when `block` is `true`.
+    pub fn lookup(&mut self, key: &[DataType], block: bool) -> Result<Datas, ViewError> {
+        let res = self.lookup_inner(key, block);
+        if let Err(ViewError::TransportError(_)) = &res {
+            self.reset_view()?;
+            Err(ViewError::NewConnection)
+        } else {
+            res
+        }
+    }
+}
+
+impl<A: Authority> View<SharedConnection, A> {
+    fn reset_view(&mut self) -> Result<(), ViewError> {
+        match &mut self.controller {
+            Some(ref mut g) => {
+                *self = g.view(&self.name).unwrap();
+                Ok(())
+            },
+            None => Err(ViewError::ResetError),
+        }
+    }
+
+    /// Retrieve the query results for the given parameter value.
+    ///
+    /// The method will block if the results are not yet available only when `block` is `true`.
+    pub fn lookup(&mut self, key: &[DataType], block: bool) -> Result<Datas, ViewError> {
+        let res = self.lookup_inner(key, block);
+        if let Err(ViewError::TransportError(_)) = &res {
+            self.reset_view()?;
+            Err(ViewError::NewConnection)
+        } else {
+            res
+        }
     }
 }
 
@@ -205,12 +273,6 @@ impl<A: Authority> View<SharedConnection, A> {
     allow(clippy::len_without_is_empty)
 )]
 impl<A: Authority, E> View<E, A> {
-    /// Reestablishes the connection to a view, possibly connecting to a new replica
-    fn reset_view(&mut self) -> Result<(), ViewError> {
-        println!("reset_view");  // TODO(ygina)
-        Err(ViewError::NewConnection)
-    }
-
     /// Set the controller so the view is able to reestablish a connection
     pub fn set_controller(&mut self, controller: &mut ControllerHandle<A>) {
         assert!(self.controller.is_none());
@@ -288,15 +350,10 @@ impl<A: Authority, E> View<E, A> {
                     keys,
                     block,
                 })
-                .map_err(TransportError::from);
+                .map_err(TransportError::from)?;
             match reply {
-                Ok(ReadReply::Normal(Ok(rows))) => Ok(rows),
-                Ok(ReadReply::Normal(Err(()))) => Err(ViewError::NotYetAvailable),
-                Err(e) => {
-                    drop(shard);
-                    self.reset_view()?;
-                    Err(e.into())
-                },
+                ReadReply::Normal(Ok(rows)) => Ok(rows),
+                ReadReply::Normal(Err(())) => Err(ViewError::NotYetAvailable),
                 _ => unreachable!(),
             }
         } else {
@@ -341,10 +398,7 @@ impl<A: Authority, E> View<E, A> {
         }
     }
 
-    /// Retrieve the query results for the given parameter value.
-    ///
-    /// The method will block if the results are not yet available only when `block` is `true`.
-    pub fn lookup(&mut self, key: &[DataType], block: bool) -> Result<Datas, ViewError> {
+    fn lookup_inner(&mut self, key: &[DataType], block: bool) -> Result<Datas, ViewError> {
         // TODO: Optimized version of this function?
         self.multi_lookup(vec![Vec::from(key)], block)
             .map(|rs| rs.into_iter().next().unwrap())
