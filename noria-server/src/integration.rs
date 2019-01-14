@@ -2390,7 +2390,7 @@ fn reader_replica_client_failover() {
     mutx.insert(vec![21.into()]).unwrap();
     sleep();
     assert!(q.lookup(&[0.into()], true).is_err());
-    // assert_eq!(q.lookup(&[0.into()], true).unwrap().len(), 2);
+    assert_eq!(q.lookup(&[0.into()], true).unwrap().len(), 2);
     // assert_eq!(q.reader_index(), 2);
 
     // After killing worker 2, we should have a handle to worker 0
