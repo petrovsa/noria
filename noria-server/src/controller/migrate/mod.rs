@@ -360,6 +360,20 @@ impl<'a> Migration<'a> {
         }
     }
 
+    fn workers_with_readers_for(
+        mainline: &ControllerInner,
+        node: NodeIndex,
+    ) -> HashSet<WorkerIdentifier> {
+        mainline.ingredients[node]
+            .get_readers()
+            .iter()
+            .filter(|&ni| !mainline.ingredients[*ni].is_dropped())
+            .filter_map(|&ni| mainline.domains.get(&mainline.ingredients[ni].domain()))
+            .flat_map(|dh| &dh.shards)
+            .map(|dsh| dsh.worker)
+            .collect()
+    }
+
     /// Places the domains and their nodes on workers according to the round robin iterator. This
     /// is used to ensure, for example, that readers for the same view and shards of the same
     /// node end up on different workers. It is also currently used to approximately distribute
@@ -391,9 +405,30 @@ impl<'a> Migration<'a> {
             let nodes = uninformed_domain_nodes.remove(&domain).unwrap();
             let num_shards = mainline.ingredients[nodes[0].0].sharded_by().shards();
             let mut identifiers = Vec::new();
+
+            // TODO(ygina): check this works for sharded
+            let mut curr_workers = HashSet::new();
+            for (ni, _) in &nodes {
+                if mainline.ingredients[*ni].is_reader() {
+                    curr_workers = Self::workers_with_readers_for(
+                        mainline,
+                        mainline
+                            .ingredients[*ni]
+                            .with_reader(|r| r.is_for())
+                            .unwrap()
+                    );
+                    break;
+                }
+            }
+
             for _ in 0..num_shards.unwrap_or(1) {
+                let mut num_tries = 0;
                 let wi = loop {
                     if let Some(wi) = wis.next() {
+                        if curr_workers.contains(&wi) && num_tries < curr_workers.len() {
+                            num_tries += 1;
+                            continue;
+                        }
                         let w = mainline.workers.get(&wi).unwrap();
                         if w.healthy {
                             break wi;
