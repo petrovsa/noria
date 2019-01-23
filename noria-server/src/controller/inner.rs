@@ -662,6 +662,7 @@ impl ControllerInner {
             start: time::Instant::now(),
             log: miglog,
             wis: None,
+            replicas: Default::default(),
         };
         let r = f(&mut m);
         m.commit();
@@ -684,6 +685,7 @@ impl ControllerInner {
             start: time::Instant::now(),
             log: miglog,
             wis: None,
+            replicas: Default::default(),
         };
         let r = f(&mut m);
         m.commit();
