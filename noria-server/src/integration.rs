@@ -50,6 +50,7 @@ pub fn build_local_logging(prefix: &str) -> LocalControllerHandle<LocalAuthority
 fn build_authority(
     prefix: &str,
     authority: Arc<LocalAuthority>,
+    replication_factor: usize,
     log: bool,
 ) -> LocalControllerHandle<LocalAuthority> {
     use crate::logger_pls;
@@ -59,7 +60,7 @@ fn build_authority(
     }
     builder.set_sharding(None);
     builder.set_persistence(get_persistence_params(prefix));
-    builder.set_replication_factor(DEFAULT_REPLICAS);
+    builder.set_replication_factor(replication_factor);
     builder.build(authority).unwrap()
 }
 
@@ -2317,9 +2318,9 @@ fn reader_replica_three_workers() {
 
     // Start Noria on three separate workers
     let authority = Arc::new(LocalAuthority::new());
-    let mut g = build_authority("worker-0", authority.clone(), false);
-    let mut g1 = build_authority("worker-1", authority.clone(), false);
-    let mut g2 = build_authority("worker-2", authority.clone(), false);
+    let mut g = build_authority("worker-0", authority.clone(), DEFAULT_REPLICAS, false);
+    let mut g1 = build_authority("worker-1", authority.clone(), DEFAULT_REPLICAS, false);
+    let mut g2 = build_authority("worker-2", authority.clone(), DEFAULT_REPLICAS, false);
 
     g.install_recipe(txt).unwrap();
     assert_eq!(g.inputs().unwrap().len(), 1);
@@ -2365,10 +2366,10 @@ fn reader_replica_spawn_new_readers() {
                QUERY q: SELECT a from x;\n";
 
     let authority = Arc::new(LocalAuthority::new());
-    let mut g0 = build_authority("worker-0", authority.clone(), false);
-    let mut g1 = build_authority("worker-1", authority.clone(), false);
-    let mut g2 = build_authority("worker-2", authority.clone(), false);
-    let mut g3 = build_authority("worker-3", authority.clone(), false);
+    let mut g0 = build_authority("worker-0", authority.clone(), DEFAULT_REPLICAS, false);
+    let mut g1 = build_authority("worker-1", authority.clone(), DEFAULT_REPLICAS, false);
+    let mut g2 = build_authority("worker-2", authority.clone(), DEFAULT_REPLICAS, false);
+    let mut g3 = build_authority("worker-3", authority.clone(), DEFAULT_REPLICAS, false);
     g0.install_recipe(txt).unwrap();
 
     // We should initially get handles to readers 1,2,0 in that order.
