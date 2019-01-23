@@ -56,6 +56,8 @@ pub struct Migration<'a> {
 
     /// Additional migration information provided by the client
     pub(super) context: HashMap<String, DataType>,
+    /// Worker iterator for domain-worker assignment
+    pub(super) wis: Option<std::vec::IntoIter<WorkerIdentifier>>,
 }
 
 impl<'a> Migration<'a> {
@@ -383,18 +385,27 @@ impl<'a> Migration<'a> {
     ///
     /// Domains are placed round robin in the order that they are provided.
     fn place_round_robin(
-            mainline: &mut ControllerInner,
-            log: &slog::Logger,
-            uninformed_domain_nodes: &mut HashMap<DomainIndex, Vec<(NodeIndex, bool)>>,
-            changed_domains: &Vec<DomainIndex>) {
+        mainline: &mut ControllerInner,
+        log: &slog::Logger,
+        uninformed_domain_nodes: &mut HashMap<DomainIndex, Vec<(NodeIndex, bool)>>,
+        changed_domains: &Vec<DomainIndex>,
+        wis: Option<std::vec::IntoIter<WorkerIdentifier>>,
+    ) -> Option<std::vec::IntoIter<WorkerIdentifier>> {
         // TODO(malte): simple round-robin placement for the moment
-        let mut wis_sorted = mainline.workers
-            .keys()
-            .map(|wi| wi.clone())
-            .collect::<Vec<WorkerIdentifier>>();
-        // Sort the worker identifiers so domain-worker assignment is deterministic
-        wis_sorted.sort_by(|wia, wib| wia.to_string().cmp(&wib.to_string()));
-        let mut wis = wis_sorted.into_iter();
+        let mut wis = {
+            if let Some(wis) = wis {
+                wis
+            } else {
+                let mut wis_sorted = mainline.workers
+                    .keys()
+                    .map(|wi| wi.clone())
+                    .collect::<Vec<WorkerIdentifier>>();
+                // Sort the worker identifiers so domain-worker assignment is deterministic
+                wis_sorted.sort_by(|wia, wib| wia.to_string().cmp(&wib.to_string()));
+                wis_sorted.into_iter()
+            }
+        };
+
         for domain in changed_domains {
             if mainline.domains.contains_key(&domain) {
                 // this is not a new domain
@@ -434,7 +445,7 @@ impl<'a> Migration<'a> {
                             break wi;
                         }
                     } else {
-                        wis_sorted = mainline.workers
+                        let mut wis_sorted = mainline.workers
                             .keys()
                             .map(|wi| wi.clone())
                             .collect::<Vec<WorkerIdentifier>>();
@@ -455,6 +466,7 @@ impl<'a> Migration<'a> {
             );
             mainline.domains.insert(*domain, d);
         }
+        Some(wis)
     }
 
     /// Commit the changes introduced by this `Migration` to the master `Soup`.
@@ -462,7 +474,7 @@ impl<'a> Migration<'a> {
     /// This will spin up an execution thread for each new thread domain, and hook those new
     /// domains into the larger Soup graph. The returned map contains entry points through which
     /// new updates should be sent to introduce them into the Soup.
-    pub fn commit(self) {
+    pub fn commit(mut self) {
         info!(self.log, "finalizing migration"; "#nodes" => self.added.len());
 
         let log = self.log;
@@ -641,17 +653,19 @@ impl<'a> Migration<'a> {
         // We call `place_round_robin` twice to distinguish the changed domains for which the order
         // matters (readers) from the changed domains for which it doesn't, as stated above.
         debug!(log, "booting new domains");
-        Self::place_round_robin(
+        self.wis = Self::place_round_robin(
             mainline,
             &log,
             &mut uninformed_domain_nodes,
             &changed_domains_readers,
+            self.wis,
         );
-        Self::place_round_robin(
+        self.wis = Self::place_round_robin(
             mainline,
             &log,
             &mut uninformed_domain_nodes,
             &changed_domains_other,
+            self.wis,
         );
 
         // Add any new nodes to existing domains (they'll also ignore all updates for now)
