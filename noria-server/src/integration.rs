@@ -2421,3 +2421,29 @@ fn correct_nested_view_schema() {
     ];
     assert_eq!(q.schema(), Some(&expected_schema[..]));
 }
+
+#[test]
+fn aggregations_have_a_replica() {
+    // Start Noria on three separate workers
+    let authority = Arc::new(LocalAuthority::new());
+    let mut g = build_authority("worker-0", authority.clone(), 1, false);
+    let mut g1 = build_authority("worker-1", authority.clone(), 1, false);
+    let mut g2 = build_authority("worker-2", authority.clone(), 1, false);
+    let mut g3 = build_authority("worker-3", authority.clone(), 1, false);
+    sleep();
+
+    g.migrate(|mig| {
+        let vote = mig.add_base("vote", &["user", "id"], Base::default());
+        let vc = mig.add_ingredient(
+            "votecount",
+            &["id", "votes"],
+            Aggregation::COUNT.over(vote, 0, &[1]),
+        );
+        mig.maintain_anonymous(vc, &[0]);
+    });
+
+    g.shutdown_now();
+    g1.shutdown_now();
+    g2.shutdown_now();
+    g3.shutdown_now();
+}
