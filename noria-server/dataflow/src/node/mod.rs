@@ -14,6 +14,9 @@ pub use self::special::StreamUpdate;
 mod ntype;
 pub use self::ntype::NodeType;
 
+mod replica;
+pub use self::replica::ReplicaType;
+
 mod debug;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -31,6 +34,8 @@ pub struct Node {
     next_reader_to_build: usize,
     next_reader_to_add: usize,
     readers: Vec<NodeIndex>,
+
+    replica: Option<ReplicaType>,
 }
 
 // constructors
@@ -56,6 +61,8 @@ impl Node {
             next_reader_to_build: 0,
             next_reader_to_add: 0,
             readers: Vec::new(),
+
+            replica: None,
         }
     }
 
@@ -384,6 +391,17 @@ impl Node {
         } else {
             None
         }
+    }
+}
+
+// inner node replication
+impl Node {
+    pub fn replica_type(&self) -> Option<ReplicaType> {
+        self.replica.clone()
+    }
+
+    pub fn set_replica_type(&mut self, rt: ReplicaType) {
+        self.replica = Some(rt);
     }
 }
 
