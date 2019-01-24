@@ -2423,8 +2423,7 @@ fn correct_nested_view_schema() {
 }
 
 #[test]
-fn aggregations_have_a_replica() {
-    // Start Noria on three separate workers
+fn aggregations_work_with_replicas() {
     let authority = Arc::new(LocalAuthority::new());
     let mut g = build_authority("worker-0", authority.clone(), 1, false);
     let mut g1 = build_authority("worker-1", authority.clone(), 1, false);
@@ -2441,6 +2440,18 @@ fn aggregations_have_a_replica() {
         );
         mig.maintain_anonymous(vc, &[0]);
     });
+
+    let mut mutx = g.table("vote").unwrap();
+    let mut q = g.view("votecount").unwrap().into_exclusive().unwrap();
+
+    // identity node does not affect results
+    let id = 0;
+    let votes = 7;
+    for _ in 0..votes {
+        mutx.insert(vec![1337.into(), id.into()]).unwrap();
+    }
+    sleep();
+    assert_eq!(q.lookup(&[id.into()], true).unwrap(), vec![vec![id.into(), votes.into()]]);
 
     g.shutdown_now();
     g1.shutdown_now();
